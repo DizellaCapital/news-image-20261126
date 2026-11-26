@@ -1,60 +1,74 @@
-#!/usr/bin/env python3
-"""Thursday Ledger runner — front page of 26 November 2026.
+"""Entry runner for the 26 November 2026 one-page newspaper.
 
-The picture itself is drawn ahead of time (see render.py) and shipped
-beside this file as entry.png. All this program does is carry those
-bytes to the directory the grader reads, then prove the copy landed
-intact. It uses nothing beyond the standard library, touches no
-network, and never looks at the clock, so repeated runs agree byte
-for byte.
+Copies the pre-rendered entry.png that sits next to this file into the
+output directory the grader provides (MAKEFUN_OUTPUT_DIR), then checks
+the copy is a valid 1024x1024 PNG under 1 MiB and byte-identical to the
+source. Standard library only: no third-party imports at all.
 """
-import hashlib, os, sys
 
-IMAGE_NAME = "entry.png"
-SIDE = 1024
-LIMIT = 1048576
-MAGIC = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+import hashlib
+import os
+import struct
+import sys
 
-
-def base_dir():
-    return os.path.dirname(os.path.realpath(__file__))
-
-
-def load_bundled():
-    path = os.path.join(base_dir(), IMAGE_NAME)
-    with open(path, "rb") as handle:
-        blob = handle.read()
-    if blob[:8] != MAGIC:
-        sys.exit("bundled file is not a PNG image")
-    if len(blob) > LIMIT:
-        sys.exit("bundled image is larger than the 1 MiB cap")
-    wide = int.from_bytes(blob[16:20], "big")
-    tall = int.from_bytes(blob[20:24], "big")
-    if (wide, tall) != (SIDE, SIDE):
-        sys.exit("bundled image must be 1024 by 1024 pixels")
-    return blob
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+MAX_BYTES = 1024 * 1024
+WANT_W = 1024
+WANT_H = 1024
 
 
-def choose_destination():
-    preferred = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    if os.path.isdir(preferred) and os.access(preferred, os.W_OK):
-        return preferred
-    return base_dir()
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def run():
-    blob = load_bundled()
-    digest = hashlib.sha256(blob).hexdigest()
-    target = os.path.join(choose_destination(), IMAGE_NAME)
-    with open(target, "wb") as handle:
-        handle.write(blob)
-    with open(target, "rb") as handle:
-        echoed = handle.read()
-    if hashlib.sha256(echoed).hexdigest() != digest:
-        sys.exit("output copy differs from the bundled image")
-    print("entry.png delivered: %d bytes, 1024x1024, sha256 %s"
-          % (len(blob), digest[:32]))
+def png_dimensions(blob):
+    if blob[:8] != PNG_MAGIC:
+        raise ValueError("not a PNG file")
+    if len(blob) < 33 or blob[12:16] != b"IHDR":
+        raise ValueError("PNG has no IHDR chunk")
+    width, height = struct.unpack(">II", blob[16:24])
+    return width, height
+
+
+def main():
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
+    if not out_dir:
+        print("MAKEFUN_OUTPUT_DIR is not set", file=sys.stderr)
+        return 2
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(here, "entry.png")
+    if not os.path.isfile(src):
+        print("entry.png missing next to main.py", file=sys.stderr)
+        return 2
+    with open(src, "rb") as fh:
+        blob = fh.read()
+    if len(blob) > MAX_BYTES:
+        print("entry.png is %d bytes, over the 1 MiB limit" % len(blob),
+              file=sys.stderr)
+        return 2
+    width, height = png_dimensions(blob)
+    if (width, height) != (WANT_W, WANT_H):
+        print("entry.png is %dx%d, expected 1024x1024" % (width, height),
+              file=sys.stderr)
+        return 2
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, "entry.png")
+    with open(dest, "wb") as fh:
+        fh.write(blob)
+    if os.path.getsize(dest) != len(blob):
+        print("output size mismatch after writing", file=sys.stderr)
+        return 2
+    if sha256_file(dest) != sha256_file(src):
+        print("hash mismatch after writing output", file=sys.stderr)
+        return 2
+    print("wrote %s (%d bytes, sha256 %s)"
+          % (dest, len(blob), sha256_file(dest)))
+    return 0
 
 
 if __name__ == "__main__":
-    run()
+    sys.exit(main())

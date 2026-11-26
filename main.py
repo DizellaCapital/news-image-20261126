@@ -1,55 +1,60 @@
 #!/usr/bin/env python3
-"""THE THURSDAY LEDGER — Thursday 26 November 2026 (entry program).
+"""Thursday Ledger runner — front page of 26 November 2026.
 
-Standard-library-only copier. Reads the bundled entry.png next to this
-file, validates it (PNG magic, 1024x1024, at most 1 MiB) and writes it
-byte-for-byte to MAKEFUN_OUTPUT_DIR/entry.png (falling back to /output,
-then to the script directory for local runs). No network, no rendering
-at run time — two runs write byte-identical files.
+The picture itself is drawn ahead of time (see render.py) and shipped
+beside this file as entry.png. All this program does is carry those
+bytes to the directory the grader reads, then prove the copy landed
+intact. It uses nothing beyond the standard library, touches no
+network, and never looks at the clock, so repeated runs agree byte
+for byte.
 """
-import hashlib
-import os
-import struct
+import hashlib, os, sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "entry.png")
-MAX_BYTES = 1048576
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+IMAGE_NAME = "entry.png"
+SIDE = 1024
+LIMIT = 1048576
+MAGIC = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
 
 
-def read_png(path):
-    with open(path, "rb") as fh:
-        data = fh.read()
-    if len(data) > MAX_BYTES:
-        raise SystemExit(f"entry.png too big: {len(data)} bytes")
-    if data[:8] != PNG_MAGIC:
-        raise SystemExit("entry.png is not a PNG")
-    width, height = struct.unpack(">II", data[16:24])
-    if (width, height) != (1024, 1024):
-        raise SystemExit(f"entry.png is {width}x{height}, want 1024x1024")
-    return data
+def base_dir():
+    return os.path.dirname(os.path.realpath(__file__))
 
 
-def output_dir():
-    for cand in (os.environ.get("MAKEFUN_OUTPUT_DIR"), "/output", HERE):
-        if cand and os.path.isdir(cand) and os.access(cand, os.W_OK):
-            return cand
-    raise SystemExit("no writable output directory found")
+def load_bundled():
+    path = os.path.join(base_dir(), IMAGE_NAME)
+    with open(path, "rb") as handle:
+        blob = handle.read()
+    if blob[:8] != MAGIC:
+        sys.exit("bundled file is not a PNG image")
+    if len(blob) > LIMIT:
+        sys.exit("bundled image is larger than the 1 MiB cap")
+    wide = int.from_bytes(blob[16:20], "big")
+    tall = int.from_bytes(blob[20:24], "big")
+    if (wide, tall) != (SIDE, SIDE):
+        sys.exit("bundled image must be 1024 by 1024 pixels")
+    return blob
 
 
-def main():
-    data = read_png(SRC)
-    out = os.path.join(output_dir(), "entry.png")
-    with open(out, "wb") as fh:
-        fh.write(data)
-    # Re-read the written file and prove it is the same bytes we validated.
-    with open(out, "rb") as fh:
-        written = fh.read()
-    if written != data:
-        raise SystemExit("written entry.png differs from the validated bytes")
-    print(f"wrote {out} ({len(data)} bytes, 1024x1024, "
-          f"sha256={hashlib.sha256(data).hexdigest()[:16]}...)")
+def choose_destination():
+    preferred = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+    if os.path.isdir(preferred) and os.access(preferred, os.W_OK):
+        return preferred
+    return base_dir()
+
+
+def run():
+    blob = load_bundled()
+    digest = hashlib.sha256(blob).hexdigest()
+    target = os.path.join(choose_destination(), IMAGE_NAME)
+    with open(target, "wb") as handle:
+        handle.write(blob)
+    with open(target, "rb") as handle:
+        echoed = handle.read()
+    if hashlib.sha256(echoed).hexdigest() != digest:
+        sys.exit("output copy differs from the bundled image")
+    print("entry.png delivered: %d bytes, 1024x1024, sha256 %s"
+          % (len(blob), digest[:32]))
 
 
 if __name__ == "__main__":
-    main()
+    run()
